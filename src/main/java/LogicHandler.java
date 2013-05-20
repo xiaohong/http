@@ -1,4 +1,5 @@
+public interface LogicHandler {
 
-public class LogicHandler {
+	public HttpResponse handle(HttpReqest reqest);
 
 }

@@ -9,120 +9,126 @@ import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-
 public class Worker {
 
 	private ConcurrentLinkedQueue<Session> queues;
-	
+
 	private Selector selector;
-	
-	public Worker(){
+
+	public Worker() {
 		queues = new ConcurrentLinkedQueue<Session>();
-		try{
-		selector = Selector.open();
-		
-		}catch (Exception e) {
+		try {
+			selector = Selector.open();
+
+		} catch (Exception e) {
 			e.printStackTrace();
 		}
 	}
-	
-	public void addSession(Session session){
+
+	public void addSession(Session session) {
 		queues.add(session);
+		selector.wakeup();
 	}
-	
-	
-	public void processNewSession() throws ClosedChannelException{
-		while(queues.size()>0){
-			Session session = queues.poll(); 
-			if (session != null){
-				session.getChannel().register(selector, SelectionKey.OP_READ, session);
+
+	public void wakeup() {
+		selector.wakeup();
+	}
+
+	public void processNewSession() throws IOException {
+		while (queues.size() > 0) {
+			Session session = queues.poll();
+			if (session != null) {
+				session.getChannel().configureBlocking(false);
+				session.getChannel().register(selector, SelectionKey.OP_READ,
+						session);
 			}
 		}
 	}
-	
-	public void run(){
+
+	public void run() {
 		new Thread(new Runnable() {
-			
+
 			public void run() {
 
-				try{
-					for (;true;){
-						
+				for (; true;) {
+
+					try {
 						processNewSession();
-						
-						int select = selector.select(100); 
-						if(select >0 ){
-							Set<SelectionKey> selectedKeys = selector.selectedKeys(); 
-							Iterator<SelectionKey> iterator = selectedKeys.iterator(); 
-							while(iterator.hasNext()){
-								SelectionKey next = iterator.next(); 
-								if(next.isAcceptable()){
-									ServerSocketChannel chan = (ServerSocketChannel) next.channel();
-									SocketChannel accept = chan.accept(); 
-									accept.configureBlocking(false);
-									accept.register(selector, SelectionKey.OP_READ, new Atter());
-								}else if(next.isReadable()){
+
+						int select = selector.select();
+						if (select > 0) {
+							Set<SelectionKey> selectedKeys = selector
+									.selectedKeys();
+							Iterator<SelectionKey> iterator = selectedKeys
+									.iterator();
+							while (iterator.hasNext()) {
+								SelectionKey next = iterator.next();
+								if (next.isReadable()) {
 									System.out.println("read...");
 									doRead(next);
-								}else if(next.isWritable()){
+								} else if (next.isWritable()) {
 									doWrite(next);
 								}
 								iterator.remove();
 							}
 						}
+					} catch (Exception e) {
+						e.printStackTrace();
 					}
-				}catch (Exception e) {
-					e.printStackTrace();
 				}
+
 			}
-		});
+		}).start();
 	}
-	
-	
-	private void doWrite(SelectionKey next) {
-		// TODO Auto-generated method stub
-		
+
+	private void doWrite(SelectionKey next) throws IOException {
+
 	}
 
 	private void doRead(SelectionKey next) {
-		SocketChannel channel =  (SocketChannel)next.channel();
-		Atter at = (Atter) next.attachment();
+		SocketChannel channel = (SocketChannel) next.channel();
+		// 如何从channel读取数据，如果数据不是一次性全部来的话，那已经读取的数据如何处理
+		Session at = (Session) next.attachment();
 		try {
-			at.data.rewind();
-			int i = channel.read(at.data);
-			if(i == -1){
-				next.cancel();
-				return;
+			for (; true;) {
+				ByteBuffer buff = ByteBuffer.allocate(1024);
+				int i = channel.read(buff);
+				if (i == 0) {
+
+					break;
+				}
+				if (i == -1) {
+					channel.shutdownOutput();
+					next.cancel();
+					return;
+				}
+
+				if (at.getRequest() == null) {
+					at.setRequest(new HttpRequestDecoder(at));
+				}
+				buff.flip();
+				State state = at.getRequest().encode(buff);
+				if (state == State.Complete) {
+					next.interestOps(next.interestOps() & ~SelectionKey.OP_READ);
+					next.interestOps(next.interestOps() | SelectionKey.OP_WRITE);
+					// channel.register(selector, SelectionKey.OP_WRITE);
+
+					ByteBuffer wrap = at.getHandler()
+							.handle(at.getRequest().getReqest()).toBytes();
+					channel.write(wrap);
+
+					// next.interestOps(next.interestOps()&
+					// ~SelectionKey.OP_READ);
+					next.interestOps(SelectionKey.OP_READ);
+
+					return;
+				}
+
 			}
-			at.data.flip();
-			String line = readLine(at.data); 
-			if(line == null){
-				at.data.position(at.data.limit());
-				next.interestOps(SelectionKey.OP_READ);
-			}else{
-				System.out.println(line);
-			}
-			
-			
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 	}
-	
-	public String readLine(ByteBuffer data){
-		StringBuilder b = new StringBuilder();
-		while(data.hasRemaining()){
-			byte c = data.get(); 
-			if(c == '\r'){
-				if(data.hasRemaining()&&data.get() == '\n'){
-					return b.toString();
-				}
-			}
-			b.append((char)c);
-		}
-		System.out.println(b.toString());
-		return null;
-	}
-	
+
 }
